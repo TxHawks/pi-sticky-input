@@ -346,3 +346,46 @@ export function isMouseInput(data: string): boolean {
   X10_MOUSE_PATTERN.lastIndex = 0;
   return SGR_MOUSE_PATTERN.test(data) || X10_MOUSE_PATTERN.test(data);
 }
+
+export interface OverlayScrollConfig {
+  mouseScroll: boolean;
+  keyboardScroll: boolean;
+  mouseWheelScrollRows: number;
+  keyboardScrollRows: number;
+}
+
+export type OverlayScrollAction =
+  | { type: "mouse"; deltaRows?: number }
+  | { type: "keyboard"; deltaRows: number };
+
+/**
+ * Classify terminal input while an overlay/modal is focused into a history-scroll action.
+ *
+ * Only inputs that cannot collide with a focused modal are recognized:
+ *  - mouse-wheel events (the whole mouse sequence is always claimed so raw SGR/X10 bytes never
+ *    leak into the modal as text), and
+ *  - page keys plus `Ctrl+Home`/`Ctrl+End`.
+ *
+ * Plain `Home`/`End` and arrow keys are intentionally left for the modal, so this never consumes
+ * the keys an interactive question dialog relies on.
+ */
+export function getOverlayScrollAction(
+  data: string,
+  config: OverlayScrollConfig,
+): OverlayScrollAction | undefined {
+  if (config.mouseScroll && isMouseInput(data)) {
+    const direction = parseMouseWheelInput(data);
+    const rows = Math.max(1, Math.floor(config.mouseWheelScrollRows));
+    const deltaRows = direction === undefined ? undefined : direction === "up" ? -rows : rows;
+    return { type: "mouse", deltaRows };
+  }
+
+  if (config.keyboardScroll) {
+    const deltaRows = getKeyboardScrollRows(data, config.keyboardScrollRows, { allowPlainHomeEnd: false });
+    if (deltaRows !== undefined) {
+      return { type: "keyboard", deltaRows };
+    }
+  }
+
+  return undefined;
+}

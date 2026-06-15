@@ -465,3 +465,89 @@ test("visible overlays hand off to the original renderer without repeated state 
 
   assert.deepEqual(tui.originalPreviousLineCounts, [0, 1]);
 });
+
+function patchRuntimeTuiWithOverlayScroll(tui, overlayScroll) {
+  const status = renderer.applyStickySplitFooterRendererPatch(
+    {
+      enabled: true,
+      minimumHistoryRows: 3,
+      historyViewportLineLimit: 200,
+      overlayScroll,
+    },
+    tui,
+  );
+  assert.equal(status.active, true);
+  return Object.getPrototypeOf(tui).doRender;
+}
+
+test("overlay scroll composites the overlay onto the sticky frame and keeps history scrollable", () => {
+  const tui = createRuntimeTui();
+  tui.hasOverlay = function () {
+    return this.overlayStack.length > 0;
+  };
+  tui.compositeOverlays = function (lines) {
+    // Stand in for pi-tui compositing: paint a modal marker over the bottom row.
+    const out = [...lines];
+    out[out.length - 1] = "MODAL";
+    return out;
+  };
+  const doRender = patchRuntimeTuiWithOverlayScroll(tui, true);
+
+  // Original (throwing) renderer must not run: the sticky layout owns the frame.
+  doRender.call(tui);
+  assert.equal(tui.previousLines[tui.previousLines.length - 1], "footer");
+
+  tui.overlayStack.push({});
+  tui.terminal.writes = [];
+  doRender.call(tui);
+
+  const buffer = tui.terminal.writes.join("");
+  assert.equal(buffer.includes("MODAL"), true, "overlay must be composited into the rendered frame");
+  assert.equal(tui.previousLines[tui.previousLines.length - 1], "MODAL");
+  assert.equal(
+    buffer.includes("\x1b[r\x1b[H\x1b[2J"),
+    true,
+    "appearing overlay should force a full clear so no stale rows survive",
+  );
+
+  const scrollResult = renderer.scrollStickySplitFooterViewport(tui, -4);
+  assert.equal(scrollResult.handled, true, "history stays scrollable while the overlay is visible");
+  assert.equal(scrollResult.changed, true);
+});
+
+test("overlay scroll falls back to the original renderer when compositeOverlays is unavailable", () => {
+  const tui = createRuntimeTuiWithOriginalRenderer();
+  const doRender = patchRuntimeTuiWithOverlayScroll(tui, true);
+
+  doRender.call(tui);
+  assert.equal(tui.previousLines.length, 10);
+
+  tui.overlayStack.push({});
+  doRender.call(tui);
+
+  assert.deepEqual(
+    tui.originalPreviousLineCounts,
+    [0],
+    "an overlay without compositeOverlays must hand off to the original renderer",
+  );
+});
+
+test("overlay scroll disabled hands off to the original renderer even when compositeOverlays exists", () => {
+  const tui = createRuntimeTuiWithOriginalRenderer();
+  tui.compositeOverlays = function (lines) {
+    return lines;
+  };
+  const doRender = patchRuntimeTuiWithOverlayScroll(tui, false);
+
+  doRender.call(tui);
+  assert.equal(tui.previousLines.length, 10);
+
+  tui.overlayStack.push({});
+  doRender.call(tui);
+
+  assert.deepEqual(
+    tui.originalPreviousLineCounts,
+    [0],
+    "overlayScroll disabled must keep the original overlay fallback behavior",
+  );
+});

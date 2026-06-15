@@ -111,6 +111,64 @@ test("visible overlays can bypass sticky terminal input handling", () => {
   assert.equal(terminalSession.hasVisibleOverlay({ overlayStack: [] }), false);
 });
 
+test("overlay scroll claims wheel events and safe page keys but leaves modal keys alone", () => {
+  const overlayConfig = {
+    mouseScroll: true,
+    keyboardScroll: true,
+    mouseWheelScrollRows: 3,
+    keyboardScrollRows: 10,
+  };
+
+  // Mouse wheel scrolls the background history.
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[<64;1;1M", overlayConfig), {
+    type: "mouse",
+    deltaRows: -3,
+  });
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[<65;1;1M", overlayConfig), {
+    type: "mouse",
+    deltaRows: 3,
+  });
+  // Non-wheel mouse events are still claimed (so raw bytes never reach the modal) but do not scroll.
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[<0;5;5M", overlayConfig), {
+    type: "mouse",
+    deltaRows: undefined,
+  });
+  // Page keys and Ctrl+Home/End scroll the background.
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[5~", overlayConfig), {
+    type: "keyboard",
+    deltaRows: -10,
+  });
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[6~", overlayConfig), {
+    type: "keyboard",
+    deltaRows: 10,
+  });
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[1;5H", overlayConfig), {
+    type: "keyboard",
+    deltaRows: -Number.MAX_SAFE_INTEGER,
+  });
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[1;5F", overlayConfig), {
+    type: "keyboard",
+    deltaRows: Number.MAX_SAFE_INTEGER,
+  });
+  // Keys the modal relies on are left untouched.
+  assert.equal(terminalSession.getOverlayScrollAction("\x1b[H", overlayConfig), undefined);
+  assert.equal(terminalSession.getOverlayScrollAction("\x1b[F", overlayConfig), undefined);
+  assert.equal(terminalSession.getOverlayScrollAction("\x1bOA", overlayConfig), undefined);
+  assert.equal(terminalSession.getOverlayScrollAction("\x1b[B", overlayConfig), undefined);
+  assert.equal(terminalSession.getOverlayScrollAction("\t", overlayConfig), undefined);
+  assert.equal(terminalSession.getOverlayScrollAction("a", overlayConfig), undefined);
+});
+
+test("overlay scroll respects disabled mouse and keyboard scroll modes", () => {
+  const mouseOnly = { mouseScroll: true, keyboardScroll: false, mouseWheelScrollRows: 3, keyboardScrollRows: 10 };
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[<64;1;1M", mouseOnly), { type: "mouse", deltaRows: -3 });
+  assert.equal(terminalSession.getOverlayScrollAction("\x1b[5~", mouseOnly), undefined);
+
+  const keyboardOnly = { mouseScroll: false, keyboardScroll: true, mouseWheelScrollRows: 3, keyboardScrollRows: 10 };
+  assert.equal(terminalSession.getOverlayScrollAction("\x1b[<64;1;1M", keyboardOnly), undefined);
+  assert.deepEqual(terminalSession.getOverlayScrollAction("\x1b[5~", keyboardOnly), { type: "keyboard", deltaRows: -10 });
+});
+
 test("non-editor focused components bypass sticky terminal input handling", () => {
   const editorFocus = {
     constructor: { name: "CustomEditor" },
