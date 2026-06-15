@@ -515,6 +515,63 @@ test("overlay scroll composites the overlay onto the sticky frame and keeps hist
   assert.equal(scrollResult.changed, true);
 });
 
+test("bottom-anchored overlays taller than the sticky pane add scroll padding below history", () => {
+  const tui = createRuntimeTui();
+  tui.hasOverlay = function () {
+    return this.overlayStack.length > 0;
+  };
+  tui.resolveOverlayLayout = function (_options, overlayHeight, _termWidth, termHeight) {
+    return {
+      width: 20,
+      row: Math.max(0, termHeight - overlayHeight),
+      col: 0,
+    };
+  };
+  tui.compositeOverlays = function (lines, termWidth, termHeight) {
+    const out = [...lines];
+    for (const entry of this.overlayStack) {
+      const overlayLines = entry.component.render(20);
+      const { row } = this.resolveOverlayLayout(entry.options, overlayLines.length, termWidth, termHeight);
+      for (let index = 0; index < overlayLines.length; index += 1) {
+        out[row + index] = overlayLines[index];
+      }
+    }
+    return out;
+  };
+  const doRender = patchRuntimeTuiWithOverlayScroll(tui, true);
+
+  doRender.call(tui);
+  assert.deepEqual(tui.previousLines.slice(0, 5), [
+    "history-15",
+    "history-16",
+    "history-17",
+    "history-18",
+    "history-19",
+  ]);
+
+  tui.overlayStack.push({
+    component: new Child(Array.from({ length: 7 }, (_unused, index) => `MODAL-${index}`)),
+  });
+  doRender.call(tui);
+
+  assert.deepEqual(
+    tui.previousLines.slice(0, 3),
+    ["history-17", "history-18", "history-19"],
+    "the end of history should be raised above the overlay-covered rows",
+  );
+  assert.equal(tui.previousLines[3], "MODAL-0");
+
+  const scrollUpResult = renderer.scrollStickySplitFooterViewport(tui, -4);
+  assert.equal(scrollUpResult.handled, true);
+  assert.equal(scrollUpResult.changed, true);
+
+  const scrollDownResult = renderer.scrollStickySplitFooterViewport(tui, Number.MAX_SAFE_INTEGER);
+  assert.equal(scrollDownResult.handled, true);
+  assert.equal(scrollDownResult.changed, true);
+  assert.equal(scrollDownResult.viewportTop, 17, "scrolling down can move past the old history bottom");
+  assert.equal(scrollDownResult.followBottom, true);
+});
+
 test("overlay scroll falls back to the original renderer when compositeOverlays is unavailable", () => {
   const tui = createRuntimeTuiWithOriginalRenderer();
   const doRender = patchRuntimeTuiWithOverlayScroll(tui, true);

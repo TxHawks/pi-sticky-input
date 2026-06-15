@@ -3,6 +3,7 @@ import {
   truncateToWidth,
   visibleWidth,
   type Component,
+  type OverlayOptions,
   type TUI,
   type Terminal,
 } from "@earendil-works/pi-tui";
@@ -34,10 +35,30 @@ interface CursorPosition {
   col: number;
 }
 
+interface OverlayLayout {
+  width: number;
+  row: number;
+  col: number;
+  maxHeight?: number;
+}
+
+interface OverlayStackEntry {
+  component?: Component;
+  options?: OverlayOptions;
+  hidden?: boolean;
+  focusOrder?: number;
+}
+
 interface TuiWithInternals {
   children: Component[];
   terminal: Terminal;
   compositeOverlays?: (lines: string[], termWidth: number, termHeight: number) => string[];
+  resolveOverlayLayout?: (
+    options: OverlayOptions | undefined,
+    overlayHeight: number,
+    termWidth: number,
+    termHeight: number,
+  ) => OverlayLayout;
   previousLines: string[];
   previousWidth: number;
   previousHeight: number;
@@ -48,7 +69,7 @@ interface TuiWithInternals {
   previousViewportTop: number;
   fullRedrawCount: number;
   stopped: boolean;
-  overlayStack: unknown[];
+  overlayStack: OverlayStackEntry[];
   hasOverlay?: () => boolean;
   extractCursorPosition?: (lines: string[], height: number) => CursorPosition | null;
   applyLineResets?: (lines: string[]) => string[];
@@ -78,6 +99,7 @@ interface SplitLayout {
   footerStartLine: number;
   stickyRows: number;
   historyRows: number;
+  historyBottomPaddingRows: number;
   historyViewportTop: number;
   screenLines: string[];
 }
@@ -86,6 +108,7 @@ interface ViewportMetadata {
   footerStartLine: number;
   stickyRows: number;
   historyRows: number;
+  historyBottomPaddingRows: number;
   historyViewportTop: number;
   logicalLineCount: number;
 }
@@ -197,6 +220,95 @@ function compositeOverlaysOntoScreenLines(
   return composited;
 }
 
+function isOverlayEntryVisible(entry: OverlayStackEntry, termWidth: number, termHeight: number): boolean {
+  if (entry.hidden) {
+    return false;
+  }
+
+  const visible = entry.options?.visible;
+  if (typeof visible === "function") {
+    return visible(termWidth, termHeight) === true;
+  }
+
+  return true;
+}
+
+function resolveOverlayVerticalSpan(
+  tui: TuiWithInternals,
+  entry: OverlayStackEntry,
+  termWidth: number,
+  termHeight: number,
+): LineSpan | undefined {
+  const resolveLayout = tui.resolveOverlayLayout;
+  const component = entry.component;
+  if (typeof resolveLayout !== "function" || !component || typeof component.render !== "function") {
+    return undefined;
+  }
+
+  const initialLayout = resolveLayout.call(tui, entry.options, 0, termWidth, termHeight);
+  if (!Number.isFinite(initialLayout.width)) {
+    return undefined;
+  }
+
+  const overlayWidth = Math.max(1, Math.floor(initialLayout.width));
+  let overlayLines = component.render(overlayWidth);
+  if (!Array.isArray(overlayLines) || overlayLines.length === 0) {
+    return undefined;
+  }
+
+  if (initialLayout.maxHeight !== undefined && Number.isFinite(initialLayout.maxHeight)) {
+    overlayLines = overlayLines.slice(0, Math.max(0, Math.floor(initialLayout.maxHeight)));
+  }
+
+  if (overlayLines.length === 0) {
+    return undefined;
+  }
+
+  const finalLayout = resolveLayout.call(tui, entry.options, overlayLines.length, termWidth, termHeight);
+  if (!Number.isFinite(finalLayout.row)) {
+    return undefined;
+  }
+
+  const start = Math.floor(finalLayout.row);
+  return { start, endExclusive: start + overlayLines.length };
+}
+
+function getOverlayHistoryBottomPaddingRows(
+  tui: TuiWithInternals,
+  termWidth: number,
+  termHeight: number,
+  historyRows: number,
+): number {
+  if (historyRows <= 0 || tui.overlayStack.length === 0 || typeof tui.resolveOverlayLayout !== "function") {
+    return 0;
+  }
+
+  const coveredHistoryRows = new Set<number>();
+  for (const entry of tui.overlayStack) {
+    if (!isOverlayEntryVisible(entry, termWidth, termHeight)) {
+      continue;
+    }
+
+    const span = resolveOverlayVerticalSpan(tui, entry, termWidth, termHeight);
+    if (!span) {
+      continue;
+    }
+
+    const overlapStart = clamp(span.start, 0, historyRows);
+    const overlapEnd = clamp(span.endExclusive, 0, historyRows);
+    for (let row = overlapStart; row < overlapEnd; row += 1) {
+      coveredHistoryRows.add(row);
+    }
+  }
+
+  let bottomPaddingRows = 0;
+  for (let row = historyRows - 1; row >= 0 && coveredHistoryRows.has(row); row -= 1) {
+    bottomPaddingRows += 1;
+  }
+
+  return clamp(bottomPaddingRows, 0, Math.max(0, historyRows - 1));
+}
+
 function getUnsupportedTerminalReason(tui: TuiWithInternals): UnsupportedLayout | undefined {
   const width = tui.terminal.columns;
   const height = tui.terminal.rows;
@@ -258,9 +370,12 @@ function renderChildren(tui: TuiWithInternals, width: number): RenderedChildren 
 function getRetainedHistoryBounds(
   historyLineCount: number,
   historyRows: number,
+  historyBottomPaddingRows = 0,
 ): { minimumViewportTop: number; maximumViewportTop: number } {
   const minimumViewportTop = 0;
-  const maximumViewportTop = Math.max(minimumViewportTop, historyLineCount - historyRows);
+  const paddingRows = clamp(Math.floor(historyBottomPaddingRows), 0, Math.max(0, historyRows - 1));
+  const virtualHistoryLineCount = historyLineCount + paddingRows;
+  const maximumViewportTop = Math.max(minimumViewportTop, virtualHistoryLineCount - historyRows);
   return { minimumViewportTop, maximumViewportTop };
 }
 
@@ -268,21 +383,26 @@ function getHistoryViewportTop(
   tui: object,
   historyLineCount: number,
   historyRows: number,
-): { viewportTop: number; followBottom: boolean } {
-  const { minimumViewportTop, maximumViewportTop } = getRetainedHistoryBounds(historyLineCount, historyRows);
+  historyBottomPaddingRows: number,
+): { viewportTop: number; followBottom: boolean; maximumViewportTop: number } {
+  const { minimumViewportTop, maximumViewportTop } = getRetainedHistoryBounds(
+    historyLineCount,
+    historyRows,
+    historyBottomPaddingRows,
+  );
   const state = historyViewportState.get(tui);
 
   if (!state || state.followBottom) {
     const nextState = { viewportTop: maximumViewportTop, followBottom: true };
     historyViewportState.set(tui, nextState);
-    return nextState;
+    return { ...nextState, maximumViewportTop };
   }
 
   const viewportTop = clamp(state.viewportTop, minimumViewportTop, maximumViewportTop);
   const followBottom = viewportTop >= maximumViewportTop;
   const nextState = { viewportTop, followBottom };
   historyViewportState.set(tui, nextState);
-  return nextState;
+  return { ...nextState, maximumViewportTop };
 }
 
 function getInlineImageMoveUpRows(line: string): number {
@@ -369,8 +489,8 @@ function alignViewportTopToInlineImageSpans(
   historyLines: readonly string[],
   viewportTop: number,
   historyRows: number,
+  maximumViewportTop: number,
 ): { viewportTop: number; unsupportedSpan?: LineSpan } {
-  const maximumViewportTop = Math.max(0, historyLines.length - historyRows);
   const spans = collectInlineImageSpans(historyLines);
   let nextViewportTop = clamp(viewportTop, 0, maximumViewportTop);
 
@@ -408,9 +528,15 @@ function createScreenLines(
   historyLines: readonly string[],
   stickyLines: readonly string[],
   historyRows: number,
+  historyBottomPaddingRows: number,
 ): { screenLines: string[]; historyViewportTop: number } | UnsupportedLayout {
-  const { viewportTop, followBottom } = getHistoryViewportTop(tui, historyLines.length, historyRows);
-  const alignedViewport = alignViewportTopToInlineImageSpans(historyLines, viewportTop, historyRows);
+  const { viewportTop, followBottom, maximumViewportTop } = getHistoryViewportTop(
+    tui,
+    historyLines.length,
+    historyRows,
+    historyBottomPaddingRows,
+  );
+  const alignedViewport = alignViewportTopToInlineImageSpans(historyLines, viewportTop, historyRows, maximumViewportTop);
   if (alignedViewport.unsupportedSpan) {
     return {
       reason: "history-inline-image-span-too-tall",
@@ -425,7 +551,6 @@ function createScreenLines(
   }
 
   const historyViewportTop = alignedViewport.viewportTop;
-  const { maximumViewportTop } = getRetainedHistoryBounds(historyLines.length, historyRows);
   historyViewportState.set(tui, {
     viewportTop: historyViewportTop,
     followBottom: followBottom || historyViewportTop >= maximumViewportTop,
@@ -454,7 +579,12 @@ function normalizeVisibleLines(lines: readonly string[], width: number): string[
   return lines.map((line) => normalizeVisibleLine(line, width));
 }
 
-function buildSplitLayout(tui: TuiWithInternals, width: number, height: number): SplitLayout | UnsupportedLayout {
+function buildSplitLayout(
+  tui: TuiWithInternals,
+  width: number,
+  height: number,
+  overlayScrollActive: boolean,
+): SplitLayout | UnsupportedLayout {
   const footerStartIndex = findStickyPaneStartIndex(tui);
   if (footerStartIndex < 0) {
     return {
@@ -491,7 +621,10 @@ function buildSplitLayout(tui: TuiWithInternals, width: number, height: number):
 
   const historyLines = rendered.lines.slice(0, footerStartLine);
   const stickyLines = rendered.lines.slice(footerStartLine);
-  const screen = createScreenLines(tui, historyLines, stickyLines, historyRows);
+  const historyBottomPaddingRows = overlayScrollActive
+    ? getOverlayHistoryBottomPaddingRows(tui, width, height, historyRows)
+    : 0;
+  const screen = createScreenLines(tui, historyLines, stickyLines, historyRows, historyBottomPaddingRows);
   if (isUnsupportedLayout(screen)) {
     return screen;
   }
@@ -503,6 +636,7 @@ function buildSplitLayout(tui: TuiWithInternals, width: number, height: number):
     footerStartLine,
     stickyRows,
     historyRows,
+    historyBottomPaddingRows,
     historyViewportTop,
     screenLines,
   };
@@ -571,6 +705,7 @@ function rememberMetadata(tui: object, layout: SplitLayout): void {
     footerStartLine: layout.footerStartLine,
     stickyRows: layout.stickyRows,
     historyRows: layout.historyRows,
+    historyBottomPaddingRows: layout.historyBottomPaddingRows,
     historyViewportTop: layout.historyViewportTop,
     logicalLineCount: layout.lines.length,
   });
@@ -803,7 +938,7 @@ function patchedDoRender(this: TUI): void {
 
   const width = tui.terminal.columns;
   const height = tui.terminal.rows;
-  const layout = buildSplitLayout(tui, width, height);
+  const layout = buildSplitLayout(tui, width, height, overlayScrollActive);
 
   if (isUnsupportedLayout(layout)) {
     recordOverlayPresence(this, overlayVisible);
@@ -849,7 +984,7 @@ export function configureStickySplitFooterRenderer(nextOptions: StickySplitFoote
       Math.max(1, Math.floor(nextOptions.minimumHistoryRows)),
       Math.floor(nextOptions.historyViewportLineLimit),
     ),
-    overlayScroll: nextOptions.overlayScroll,
+    overlayScroll: nextOptions.overlayScroll ?? DEFAULT_OPTIONS.overlayScroll,
     diagnostic: nextOptions.diagnostic,
   };
 }
@@ -911,8 +1046,13 @@ function getCurrentViewportTop(
   tui: object,
   historyLineCount: number,
   historyRows: number,
+  historyBottomPaddingRows: number,
 ): { currentViewportTop: number; minimumViewportTop: number; maximumViewportTop: number } {
-  const { minimumViewportTop, maximumViewportTop } = getRetainedHistoryBounds(historyLineCount, historyRows);
+  const { minimumViewportTop, maximumViewportTop } = getRetainedHistoryBounds(
+    historyLineCount,
+    historyRows,
+    historyBottomPaddingRows,
+  );
   const currentState = historyViewportState.get(tui);
   const currentViewportTop = currentState?.followBottom === false
     ? currentState.viewportTop
@@ -959,6 +1099,7 @@ export function scrollStickySplitFooterViewport(
     tui,
     metadata.footerStartLine,
     metadata.historyRows,
+    metadata.historyBottomPaddingRows,
   );
   const viewportTop = clamp(currentViewportTop + Math.trunc(deltaRows), minimumViewportTop, maximumViewportTop);
 
