@@ -9,5 +9,6 @@
   "keyboardScroll": true,
   "keyboardScrollRows": 10,
   "minimumHistoryRows": 3,
-  "historyViewportLineLimit": 200
+  "historyViewportLineLimit": 200,
+  "overlayScroll": true
 }

@@ -13,6 +13,13 @@ export interface StickySplitFooterRendererOptions {
   enabled: boolean;
   minimumHistoryRows: number;
   historyViewportLineLimit: number;
+  /**
+   * Keep the sticky split layout (and its scrollable history viewport) active while an
+   * overlay/modal is visible, compositing the overlay on top instead of handing off to
+   * Pi's original renderer. Falls back to the original renderer when the running pi-tui
+   * does not expose `compositeOverlays`.
+   */
+  overlayScroll: boolean;
   diagnostic?: StickySplitFooterDiagnostic;
 }
 
@@ -30,6 +37,7 @@ interface CursorPosition {
 interface TuiWithInternals {
   children: Component[];
   terminal: Terminal;
+  compositeOverlays?: (lines: string[], termWidth: number, termHeight: number) => string[];
   previousLines: string[];
   previousWidth: number;
   previousHeight: number;
@@ -108,6 +116,7 @@ const DEFAULT_OPTIONS: StickySplitFooterRendererOptions = {
   enabled: false,
   minimumHistoryRows: 3,
   historyViewportLineLimit: 200,
+  overlayScroll: true,
 };
 
 const STICKY_PANE_CHILD_COUNT = 5;
@@ -126,6 +135,7 @@ let lastPatchReason = "not-installed";
 
 const viewportMetadata = new WeakMap<object, ViewportMetadata>();
 const historyViewportState = new WeakMap<object, HistoryViewportState>();
+const overlayPresence = new WeakMap<object, boolean>();
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
@@ -153,6 +163,38 @@ function getVisibleOverlayState(tui: TuiWithInternals): boolean {
   }
 
   return Array.isArray(tui.overlayStack) && tui.overlayStack.length > 0;
+}
+
+/** Records the current overlay presence and reports whether it changed since the last render. */
+function recordOverlayPresence(tui: object, overlayVisible: boolean): boolean {
+  const previous = overlayPresence.get(tui);
+  overlayPresence.set(tui, overlayVisible);
+  return previous !== undefined && previous !== overlayVisible;
+}
+
+function compositeOverlaysOntoScreenLines(
+  tui: TuiWithInternals,
+  screenLines: string[],
+  width: number,
+  height: number,
+): string[] {
+  const composite = tui.compositeOverlays;
+  if (typeof composite !== "function") {
+    return screenLines;
+  }
+
+  const composited = composite.call(tui, screenLines, width, height);
+  if (!Array.isArray(composited)) {
+    return screenLines;
+  }
+
+  // The sticky renderer addresses screen rows absolutely, so the composited frame must stay
+  // exactly `height` rows. compositeOverlays anchors overlays to the bottom viewport; keep that
+  // bottom slice in the unlikely event it padded the base layer beyond the viewport.
+  if (composited.length > height) {
+    return composited.slice(composited.length - height);
+  }
+  return composited;
 }
 
 function getUnsupportedTerminalReason(tui: TuiWithInternals): UnsupportedLayout | undefined {
@@ -744,9 +786,17 @@ function patchedDoRender(this: TUI): void {
     return;
   }
 
-  if (getVisibleOverlayState(tui)) {
+  const overlayVisible = getVisibleOverlayState(tui);
+  const overlayScrollActive = overlayVisible
+    && options.overlayScroll
+    && typeof tui.compositeOverlays === "function";
+
+  if (overlayVisible && !overlayScrollActive) {
+    recordOverlayPresence(this, overlayVisible);
     forceOriginalRenderer(tui, originalDoRender, this, "visible-overlay", {
       overlayCount: tui.overlayStack.length,
+      overlayScroll: options.overlayScroll,
+      compositeOverlaysAvailable: typeof tui.compositeOverlays === "function",
     });
     return;
   }
@@ -756,16 +806,30 @@ function patchedDoRender(this: TUI): void {
   const layout = buildSplitLayout(tui, width, height);
 
   if (isUnsupportedLayout(layout)) {
+    recordOverlayPresence(this, overlayVisible);
     forceOriginalRenderer(tui, originalDoRender, this, layout.reason, layout.fields);
     return;
   }
 
-  const cursorPos = extractCursorPosition(layout.screenLines, height);
-  const appliedLines = tui.applyLineResets?.(layout.screenLines) ?? layout.screenLines;
+  // Composite any visible overlay (e.g. an interactive question modal) on top of the sticky
+  // split layout so the bounded history viewport stays scrollable while the overlay is shown.
+  const compositedLayout: SplitLayout = overlayScrollActive
+    ? { ...layout, screenLines: compositeOverlaysOntoScreenLines(tui, layout.screenLines, width, height) }
+    : layout;
+
+  const cursorPos = extractCursorPosition(compositedLayout.screenLines, height);
+  const appliedLines = tui.applyLineResets?.(compositedLayout.screenLines) ?? compositedLayout.screenLines;
   const appliedLayout: SplitLayout = {
-    ...layout,
+    ...compositedLayout,
     screenLines: normalizeVisibleLines(appliedLines, width),
   };
+
+  // Force a full clear on the frame where the overlay appears or disappears so no stale overlay
+  // rows survive the differential redraw.
+  const overlayChanged = recordOverlayPresence(this, overlayVisible);
+  if (overlayScrollActive && overlayChanged) {
+    logDiagnostic("overlay_composite_engaged", { overlayCount: tui.overlayStack.length });
+  }
 
   renderBoundedViewport(
     tui,
@@ -773,7 +837,7 @@ function patchedDoRender(this: TUI): void {
     cursorPos,
     width,
     height,
-    shouldClearViewport(tui, width, height, appliedLayout.screenLines),
+    overlayChanged || shouldClearViewport(tui, width, height, appliedLayout.screenLines),
   );
 }
 
@@ -785,6 +849,7 @@ export function configureStickySplitFooterRenderer(nextOptions: StickySplitFoote
       Math.max(1, Math.floor(nextOptions.minimumHistoryRows)),
       Math.floor(nextOptions.historyViewportLineLimit),
     ),
+    overlayScroll: nextOptions.overlayScroll,
     diagnostic: nextOptions.diagnostic,
   };
 }
@@ -907,6 +972,7 @@ export function resetStickySplitFooterViewport(runtimeTui?: TUI): void {
 
   historyViewportState.delete(runtimeTui as unknown as object);
   viewportMetadata.delete(runtimeTui as unknown as object);
+  overlayPresence.delete(runtimeTui as unknown as object);
 }
 
 export function getStickySplitFooterPatchStatus(): StickySplitFooterPatchStatus {

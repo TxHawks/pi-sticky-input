@@ -123,18 +123,19 @@ function createRendererOptions(configResult: StickyInputConfigLoadResult, logger
     enabled: getRendererEnabled(configResult),
     minimumHistoryRows: config.minimumHistoryRows,
     historyViewportLineLimit: config.historyViewportLineLimit,
+    overlayScroll: config.overlayScroll,
     diagnostic: (event: string, fields: Record<string, unknown>) => {
       logger.log(event, fields);
     },
   };
 }
 
-async function createRuntimeState(): Promise<RuntimeState> {
+async function createRuntimeState(cwd?: string): Promise<RuntimeState> {
   const [{ loadStickyInputConfig }, { DebugLogger }] = await Promise.all([
     loadConfigModule(),
     loadDebugLoggerModule(),
   ]);
-  const configResult = loadStickyInputConfig();
+  const configResult = loadStickyInputConfig({ cwd });
   const logger = DebugLogger.create(configResult.config);
   return {
     configResult,
@@ -165,6 +166,48 @@ function isEditorTextEmpty(getEditorText: (() => string) | undefined): boolean {
   }
 }
 
+function handleStickyOverlayScrollInput(
+  runtime: RuntimeState,
+  terminalSession: TerminalSessionModule,
+  splitFooterRenderer: SplitFooterRendererModule,
+  tui: ReturnType<TerminalSessionModule["getActiveStickyTerminalTui"]>,
+  data: string,
+): { consume?: boolean; data?: string } | undefined {
+  const { config } = runtime.configResult;
+  const action = terminalSession.getOverlayScrollAction(data, config);
+  if (!action) {
+    return undefined;
+  }
+
+  if (action.type === "mouse") {
+    if (action.deltaRows !== undefined) {
+      const result = splitFooterRenderer.scrollStickySplitFooterViewport(tui, action.deltaRows);
+      runtime.logger.log("overlay_mouse_scroll", {
+        deltaRows: action.deltaRows,
+        handled: result.handled,
+        changed: result.changed,
+        viewportTop: result.viewportTop,
+        followBottom: result.followBottom,
+      });
+    }
+    // Always claim mouse sequences so raw SGR/X10 bytes never reach the focused modal.
+    return { consume: true };
+  }
+
+  const result = splitFooterRenderer.scrollStickySplitFooterViewport(tui, action.deltaRows);
+  if (result.handled) {
+    runtime.logger.log("overlay_keyboard_scroll", {
+      deltaRows: action.deltaRows,
+      changed: result.changed,
+      viewportTop: result.viewportTop,
+      followBottom: result.followBottom,
+    });
+    return { consume: true };
+  }
+
+  return undefined;
+}
+
 function handleStickyTerminalInput(
   runtime: RuntimeState,
   terminalSession: TerminalSessionModule,
@@ -174,6 +217,15 @@ function handleStickyTerminalInput(
 ): { consume?: boolean; data?: string } | undefined {
   const { config } = runtime.configResult;
   const tui = terminalSession.getActiveStickyTerminalTui();
+
+  // While a modal/overlay is focused, only scroll the background history with inputs that cannot
+  // collide with the modal's own keys, and let everything else flow through to the modal.
+  if (tui && terminalSession.hasVisibleOverlay(tui)) {
+    if (!config.overlayScroll) {
+      return undefined;
+    }
+    return handleStickyOverlayScrollInput(runtime, terminalSession, splitFooterRenderer, tui, data);
+  }
 
   if (!terminalSession.shouldHandleStickyTerminalInput(tui)) {
     return undefined;
@@ -326,9 +378,10 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
   let pendingRuntime: Promise<RuntimeState> | undefined;
   let unsubscribeTerminalInput: (() => void) | undefined;
   let terminalInputListenerGeneration = 0;
+  let projectCwd: string | undefined;
 
   async function refreshRuntimeState(): Promise<RuntimeState> {
-    const nextRuntime = createRuntimeState();
+    const nextRuntime = createRuntimeState(projectCwd);
     pendingRuntime = nextRuntime;
     try {
       runtime = await nextRuntime;
@@ -355,6 +408,7 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
   pi.registerCommand("sticky-input", {
     description: "Toggle pi-sticky-input mouse-wheel chat scrolling.",
     handler: async (args, ctx) => {
+      projectCwd = ctx.cwd;
       const command = await loadMouseScrollCommandModule();
       const action = command.parseStickyInputCommandArgs(args);
       if (action.type === "error") {
@@ -425,12 +479,14 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
       return;
     }
 
+    projectCwd = ctx.cwd;
     const currentRuntime = await refreshRuntimeState();
     await installSplitFooterRendererHook(ctx, currentRuntime);
     await installTerminalInputListener(ctx, currentRuntime);
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    projectCwd = ctx.cwd;
     const currentRuntime = await refreshRuntimeState();
     const { config } = currentRuntime.configResult;
 
@@ -450,6 +506,7 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
       mouseWheelScrollRows: config.mouseWheelScrollRows,
       keyboardScroll: config.keyboardScroll,
       keyboardScrollRows: config.keyboardScrollRows,
+      overlayScroll: config.overlayScroll,
       minimumHistoryRows: config.minimumHistoryRows,
       historyViewportLineLimit: config.historyViewportLineLimit,
       apiIntegration: "split-footer-renderer",
