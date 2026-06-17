@@ -19,6 +19,7 @@ export interface StickyInputConfig {
   alternateScreen: boolean;
   alternateScroll: boolean;
   mouseScroll: boolean;
+  mouseSelectionCopy: boolean;
   mouseWheelScrollRows: number;
   keyboardScroll: boolean;
   keyboardScrollRows: number;
@@ -49,7 +50,8 @@ export const DEFAULT_STICKY_INPUT_CONFIG: StickyInputConfig = {
   splitFooterRenderer: true,
   alternateScreen: true,
   alternateScroll: false,
-  mouseScroll: false,
+  mouseScroll: true,
+  mouseSelectionCopy: true,
   mouseWheelScrollRows: 3,
   keyboardScroll: true,
   keyboardScrollRows: 10,
@@ -65,6 +67,7 @@ const BOOLEAN_FIELDS = [
   "alternateScreen",
   "alternateScroll",
   "mouseScroll",
+  "mouseSelectionCopy",
   "keyboardScroll",
   "overlayScroll",
 ] as const satisfies readonly (keyof StickyInputConfig)[];

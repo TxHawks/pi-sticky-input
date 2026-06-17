@@ -1,47 +1,33 @@
 # pi-sticky-input
 
-[![npm version](https://img.shields.io/npm/v/pi-sticky-input?style=flat-square)](https://www.npmjs.com/package/pi-sticky-input) [![License](https://img.shields.io/github/license/MasuRii/pi-sticky-input?style=flat-square)](LICENSE)
-
 `pi-sticky-input` is a Pi extension that keeps chat input, status widgets, editor content, and footer controls anchored while session history updates in a bounded viewport above them.
 
-- **npm**: https://www.npmjs.com/package/pi-sticky-input
-- **GitHub**: https://github.com/MasuRii/pi-sticky-input
+- **GitHub**: <https://github.com/TxHawks/pi-sticky-input>
 
 ## Capabilities
 
 - Keeps Pi's status, below-editor widgets, editor, and footer together in a sticky pane.
 - Bounds rendered history above the sticky pane so long sessions do not push input off screen.
-- Uses an alternate screen by default to avoid terminal scrollback fighting the sticky input layout.
+- Uses an alternate screen by default for a full-screen sticky layout.
 - Supports keyboard history scrolling with `PageUp`, `PageDown`, `Ctrl+PageUp`, `Ctrl+PageDown`, `Ctrl+Home`, and `Ctrl+End`.
-- Supports optional terminal mouse-wheel scrolling through alternate-scroll mode or SGR mouse capture.
+- Supports terminal mouse-wheel scrolling through SGR mouse capture by default, with emulated drag-to-copy selection while mouse capture is enabled.
 - Keeps history scrollable while an interactive overlay (such as a question dialog) is open, compositing the overlay on top of the sticky pane (`overlayScroll`).
 - Falls back to Pi's original renderer for structurally unknown layouts (and for overlays when `overlayScroll` is off or the host pi-tui lacks overlay compositing).
 - Keeps debug logging disabled by default and writes only to the extension-local `debug/` directory when enabled.
 
 ## Installation
 
-### npm package
+### Global installation
 
 ```bash
-pi install npm:pi-sticky-input
+pi install git:github.com/TxHawks/pi-sticky-input
 ```
 
-### Git repository
+### Local installation
 
 ```bash
-pi install git:github.com/MasuRii/pi-sticky-input
+pi install -l git:github.com/TxHawks/pi-sticky-input
 ```
-
-### Local extension folder
-
-Place this folder in one of Pi's extension discovery paths:
-
-| Scope | Path |
-|-------|------|
-| Global default | `~/.pi/agent/extensions/pi-sticky-input` |
-| Project | `.pi/extensions/pi-sticky-input` |
-
-Pi discovers the extension through the root `index.ts` entry listed in `package.json`, which forwards to `src/index.ts`.
 
 ## Usage
 
@@ -57,20 +43,22 @@ The `/sticky-input` command controls optional mouse-wheel capture at runtime:
 /sticky-input help
 ```
 
-Keyboard history scrolling is enabled by default. Mouse-wheel capture is disabled by default because full mouse tracking can block native terminal text selection and link clicks.
+Keyboard history scrolling, mouse-wheel capture, and alternate-screen mode are enabled by default.
+
+Because mouse capture is enabled by default, native terminal selection/link clicks are captured by the app. With `mouseSelectionCopy: true` (default), pi-sticky-input emulates drag selection inside the rendered viewport and copies selected text to the clipboard on mouse release. Run `/sticky-input off` to restore native terminal mouse behavior for the current session.
 
 ## Configuration
 
 Configuration is resolved by layering several sources. Later sources override earlier ones, field by field:
 
-| Order | Source | Notes |
-|-------|--------|-------|
-| 1 | Built-in defaults | See the table below. |
-| 2 | `~/.pi/agent/extensions/pi-sticky-input/config.json` | Extension-local runtime config (a flat object). |
-| 3 | `~/.pi/agent/settings.json` → `stickyInput` | Global Pi settings; this extension reads the nested `stickyInput` object. |
-| 4 | `<project>/.pi/pi-sticky-input.json` | Per-project config file (a flat object). |
-| 5 | `<project>/.pi/settings.json` → `stickyInput` | Per-project Pi settings; reads the nested `stickyInput` object. |
-| 6 | `PI_STICKY_INPUT_*` environment variables | Highest precedence. |
+| Order | Source                                               | Notes                                                                     |
+| ----- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
+| 1     | Built-in defaults                                    | See the table below.                                                      |
+| 2     | `~/.pi/agent/extensions/pi-sticky-input/config.json` | Extension-local runtime config (a flat object).                           |
+| 3     | `~/.pi/agent/settings.json` → `stickyInput`          | Global Pi settings; this extension reads the nested `stickyInput` object. |
+| 4     | `<project>/.pi/pi-sticky-input.json`                 | Per-project config file (a flat object).                                  |
+| 5     | `<project>/.pi/settings.json` → `stickyInput`        | Per-project Pi settings; reads the nested `stickyInput` object.           |
+| 6     | `PI_STICKY_INPUT_*` environment variables            | Highest precedence.                                                       |
 
 Invalid values from any source are reported as a startup warning and dropped, so a lower-precedence source (or the default) shows through instead.
 
@@ -82,8 +70,8 @@ Each file source may also place its keys under a `stickyInput` object — this i
   "theme": "kanagawa-dragon",
   "stickyInput": {
     "mouseScroll": true,
-    "overlayScroll": true
-  }
+    "overlayScroll": true,
+  },
 }
 ```
 
@@ -99,20 +87,21 @@ The published package intentionally excludes local runtime state: `config.json` 
 
 ### Configuration options
 
-| Key | Type | Default | Purpose |
-|-----|------|---------|---------|
-| `debug` | `boolean` | `false` | Enables file-only diagnostics under `debug/debug.log` |
-| `enabled` | `boolean` | `true` | Enables the extension |
-| `splitFooterRenderer` | `boolean` | `true` | Enables the sticky split-footer renderer patch |
-| `alternateScreen` | `boolean` | `true` | Uses an alternate terminal screen while the session is active |
-| `alternateScroll` | `boolean` | `false` | Lets compatible terminals translate wheel input into alternate-screen cursor sequences |
-| `mouseScroll` | `boolean` | `false` | Enables SGR mouse-wheel capture for terminals without alternate-scroll support |
-| `mouseWheelScrollRows` | `number` | `3` | Rows scrolled per wheel event |
-| `keyboardScroll` | `boolean` | `true` | Enables page-key and home/end history scrolling |
-| `keyboardScrollRows` | `number` | `10` | Rows scrolled per keyboard page event |
-| `minimumHistoryRows` | `number` | `3` | Minimum history viewport height before falling back on very small terminals |
-| `historyViewportLineLimit` | `number` | `200` | Maximum retained renderer-managed history lines before choosing the visible slice |
-| `overlayScroll` | `boolean` | `true` | Keeps history scrollable while an overlay/modal is open by compositing the overlay over the sticky pane; falls back to Pi's original renderer when disabled or unsupported |
+| Key                        | Type      | Default | Purpose                                                                                                                                                                    |
+| -------------------------- | --------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `debug`                    | `boolean` | `false` | Enables file-only diagnostics under `debug/debug.log`                                                                                                                      |
+| `enabled`                  | `boolean` | `true`  | Enables the extension                                                                                                                                                      |
+| `splitFooterRenderer`      | `boolean` | `true`  | Enables the sticky split-footer renderer patch                                                                                                                             |
+| `alternateScreen`          | `boolean` | `true`  | Uses an alternate terminal screen while the session is active for a full-screen app-style layout                                                                            |
+| `alternateScroll`          | `boolean` | `false` | Lets compatible terminals translate wheel input into alternate-screen cursor sequences                                                                                     |
+| `mouseScroll`              | `boolean` | `true`  | Enables SGR mouse-wheel capture for terminals without alternate-scroll support                                                                                             |
+| `mouseSelectionCopy`       | `boolean` | `true`  | When `mouseScroll` is enabled, emulates drag selection and copies selected text to the clipboard on release                                                                |
+| `mouseWheelScrollRows`     | `number`  | `3`     | Rows scrolled per wheel event                                                                                                                                              |
+| `keyboardScroll`           | `boolean` | `true`  | Enables page-key and home/end history scrolling                                                                                                                            |
+| `keyboardScrollRows`       | `number`  | `10`    | Rows scrolled per keyboard page event                                                                                                                                      |
+| `minimumHistoryRows`       | `number`  | `3`     | Minimum history viewport height before falling back on very small terminals                                                                                                |
+| `historyViewportLineLimit` | `number`  | `200`   | Maximum retained renderer-managed history lines before choosing the visible slice                                                                                          |
+| `overlayScroll`            | `boolean` | `true`  | Keeps history scrollable while an overlay/modal is open by compositing the overlay over the sticky pane; falls back to Pi's original renderer when disabled or unsupported |
 
 ### Example config
 
@@ -123,7 +112,8 @@ The published package intentionally excludes local runtime state: `config.json` 
   "splitFooterRenderer": true,
   "alternateScreen": true,
   "alternateScroll": false,
-  "mouseScroll": false,
+  "mouseScroll": true,
+  "mouseSelectionCopy": true,
   "mouseWheelScrollRows": 3,
   "keyboardScroll": true,
   "keyboardScrollRows": 10,

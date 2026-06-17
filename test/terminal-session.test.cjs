@@ -7,8 +7,10 @@ const jiti = createJiti(path.join(__dirname, "terminal-session.test.cjs"), { int
 const terminalSession = jiti("../src/tui/terminal-session.ts");
 const config = jiti("../src/config/config.ts");
 
-test("default terminal compatibility preserves native selection and links", () => {
-  assert.equal(config.DEFAULT_STICKY_INPUT_CONFIG.mouseScroll, false);
+test("default terminal mode uses full-screen mouse scrolling with selection-copy", () => {
+  assert.equal(config.DEFAULT_STICKY_INPUT_CONFIG.alternateScreen, true);
+  assert.equal(config.DEFAULT_STICKY_INPUT_CONFIG.mouseScroll, true);
+  assert.equal(config.DEFAULT_STICKY_INPUT_CONFIG.mouseSelectionCopy, true);
   assert.equal(config.DEFAULT_STICKY_INPUT_CONFIG.alternateScroll, false);
 });
 
@@ -32,14 +34,15 @@ test("alternate screen is restored after TUI stop, not before it", () => {
     alternateScreen: true,
     alternateScroll: false,
     mouseScroll: true,
+    mouseSelectionCopy: true,
   });
-  assert.equal(events[0], "\x1b[?1049h\x1b[H\x1b[2J\x1b[?1007l\x1b[?1000h\x1b[?1006h");
+  assert.equal(events[0], "\x1b[?1049h\x1b[H\x1b[2J\x1b[?1007l\x1b[?1002h\x1b[?1006h");
   assert.equal(events[0].includes("\x1b[?1007h"), false);
   events.length = 0;
 
   tui.stop();
 
-  assert.deepEqual(events, ["original-stop", "\x1b[?1006l\x1b[?1000l\x1b[?1049l"]);
+  assert.deepEqual(events, ["original-stop", "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l"]);
 });
 
 test("mouse tracking can toggle without leaving alternate screen", () => {
@@ -60,6 +63,7 @@ test("mouse tracking can toggle without leaving alternate screen", () => {
     alternateScreen: true,
     alternateScroll: false,
     mouseScroll: false,
+    mouseSelectionCopy: true,
   });
   events.length = 0;
 
@@ -67,9 +71,10 @@ test("mouse tracking can toggle without leaving alternate screen", () => {
     alternateScreen: true,
     alternateScroll: false,
     mouseScroll: true,
+    mouseSelectionCopy: true,
   });
 
-  assert.equal(events[0], "\x1b[?1000h\x1b[?1006h");
+  assert.equal(events[0], "\x1b[?1002h\x1b[?1006h");
   assert.equal(events[0].includes("\x1b[?1049l"), false);
   assert.equal(events[0].includes("\x1b[?1049h"), false);
   events.length = 0;
@@ -78,10 +83,61 @@ test("mouse tracking can toggle without leaving alternate screen", () => {
     alternateScreen: true,
     alternateScroll: false,
     mouseScroll: false,
+    mouseSelectionCopy: true,
   });
 
-  assert.equal(events[0], "\x1b[?1006l\x1b[?1000l");
+  assert.equal(events[0], "\x1b[?1006l\x1b[?1002l\x1b[?1000l");
   assert.equal(events[0].includes("\x1b[?1049l"), false);
+});
+
+test("mouse tracking can opt out of selection-copy drag reporting", () => {
+  const events = [];
+  const tui = {
+    terminal: {
+      write(data) {
+        events.push(data);
+      },
+    },
+    requestRender(force) {
+      events.push(`requestRender:${force}`);
+    },
+    stop() {},
+  };
+
+  terminalSession.activateStickyTerminalSession(tui, {
+    alternateScreen: false,
+    alternateScroll: false,
+    mouseScroll: true,
+    mouseSelectionCopy: false,
+  });
+
+  assert.equal(events[0], "\x1b[?1000h\x1b[?1006h");
+  terminalSession.deactivateStickyTerminalSession();
+});
+
+test("mouse input actions include wheel and emulated selection gestures", () => {
+  assert.deepEqual(terminalSession.getStickyMouseInputAction("\x1b[<64;1;1M", { selectionCopy: true }), {
+    type: "wheel",
+    direction: "up",
+  });
+  assert.deepEqual(terminalSession.getStickyMouseInputAction("\x1b[<0;5;6M", { selectionCopy: true }), {
+    type: "leftPress",
+    row: 5,
+    col: 4,
+  });
+  assert.deepEqual(terminalSession.getStickyMouseInputAction("\x1b[<32;7;8M", { selectionCopy: true }), {
+    type: "leftDrag",
+    row: 7,
+    col: 6,
+  });
+  assert.deepEqual(terminalSession.getStickyMouseInputAction("\x1b[<0;9;10m", { selectionCopy: true }), {
+    type: "release",
+    row: 9,
+    col: 8,
+  });
+  assert.deepEqual(terminalSession.getStickyMouseInputAction("\x1b[<0;5;6M", { selectionCopy: false }), {
+    type: "mouse",
+  });
 });
 
 test("arrow key sequences are left for the focused UI instead of sticky history scrolling", () => {
