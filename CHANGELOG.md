@@ -4,6 +4,8 @@ All notable changes to this extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-17
+
 ### Added
 - Added `mouseSelectionCopy` (default `true`): when `mouseScroll` is enabled, mouse drag selection is emulated inside the sticky viewport and copied to the clipboard on release.
 
