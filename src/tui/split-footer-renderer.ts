@@ -123,6 +123,17 @@ interface LineSpan {
   endExclusive: number;
 }
 
+interface SelectionPoint {
+  row: number;
+  col: number;
+}
+
+interface SelectionState {
+  anchor: SelectionPoint;
+  focus: SelectionPoint;
+  dragging: boolean;
+}
+
 export interface StickySplitFooterScrollResult {
   handled: boolean;
   changed: boolean;
@@ -159,6 +170,7 @@ let lastPatchReason = "not-installed";
 const viewportMetadata = new WeakMap<object, ViewportMetadata>();
 const historyViewportState = new WeakMap<object, HistoryViewportState>();
 const overlayPresence = new WeakMap<object, boolean>();
+const selectionState = new WeakMap<object, SelectionState>();
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
@@ -579,6 +591,124 @@ function normalizeVisibleLines(lines: readonly string[], width: number): string[
   return lines.map((line) => normalizeVisibleLine(line, width));
 }
 
+function stripTerminalControls(line: string): string {
+  return line
+    .replaceAll(CURSOR_MARKER, "")
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b_G[\s\S]*?\x1b\\/g, "")
+    .replace(/\x1bP[\s\S]*?\x1b\\/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function slicePlainTextColumns(text: string, startCol: number, endCol: number): string {
+  const start = Math.max(0, startCol);
+  const end = Math.max(start, endCol);
+  let col = 0;
+  let result = "";
+
+  for (const segment of Array.from(text)) {
+    const width = Math.max(0, visibleWidth(segment));
+    const nextCol = col + width;
+    if (nextCol > start && col < end) {
+      result += segment;
+    }
+    col = nextCol;
+    if (col >= end) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+function compareSelectionPoints(left: SelectionPoint, right: SelectionPoint): number {
+  return left.row === right.row ? left.col - right.col : left.row - right.row;
+}
+
+function getOrderedSelection(state: SelectionState): { start: SelectionPoint; end: SelectionPoint } {
+  return compareSelectionPoints(state.anchor, state.focus) <= 0
+    ? { start: state.anchor, end: state.focus }
+    : { start: state.focus, end: state.anchor };
+}
+
+function getSelectionRangeForRow(state: SelectionState, row: number): { startCol: number; endCol: number } | undefined {
+  const { start, end } = getOrderedSelection(state);
+  if (row < start.row || row > end.row) {
+    return undefined;
+  }
+
+  return {
+    startCol: row === start.row ? start.col : 0,
+    endCol: row === end.row ? end.col : Number.POSITIVE_INFINITY,
+  };
+}
+
+function getSelectableLineWidth(line: string): number {
+  return visibleWidth(stripTerminalControls(line));
+}
+
+function normalizeSelectionPoint(tui: TuiWithInternals, row: number, col: number): SelectionPoint {
+  const screenLines = Array.isArray(tui.previousLines) ? tui.previousLines : [];
+  const rowCount = Math.max(1, screenLines.length || tui.terminal?.rows || 1);
+  const normalizedRow = clamp(Math.floor(row), 0, rowCount - 1);
+  const lineWidth = getSelectableLineWidth(screenLines[normalizedRow] ?? "");
+  return {
+    row: normalizedRow,
+    col: clamp(Math.floor(col), 0, Math.max(0, lineWidth)),
+  };
+}
+
+function renderSelectionHighlight(line: string, row: number, state: SelectionState): string {
+  if (isInlineImageProtocolLine(line)) {
+    return line;
+  }
+
+  const range = getSelectionRangeForRow(state, row);
+  if (!range) {
+    return line;
+  }
+
+  const plain = stripTerminalControls(line);
+  const lineWidth = visibleWidth(plain);
+  const startCol = clamp(range.startCol, 0, lineWidth);
+  const endCol = clamp(range.endCol, startCol, lineWidth);
+  if (startCol === endCol) {
+    return line;
+  }
+
+  const before = slicePlainTextColumns(plain, 0, startCol);
+  const selected = slicePlainTextColumns(plain, startCol, endCol);
+  const after = slicePlainTextColumns(plain, endCol, Number.POSITIVE_INFINITY);
+  return `${before}\x1b[7m${selected}\x1b[27m${after}`;
+}
+
+function applySelectionHighlight(tui: object, lines: readonly string[]): string[] {
+  const state = selectionState.get(tui);
+  if (!state) {
+    return [...lines];
+  }
+
+  return lines.map((line, row) => renderSelectionHighlight(line, row, state));
+}
+
+function getSelectedText(lines: readonly string[], state: SelectionState): string {
+  const { start, end } = getOrderedSelection(state);
+  if (start.row === end.row && start.col === end.col) {
+    return "";
+  }
+
+  const selected: string[] = [];
+  for (let row = start.row; row <= end.row; row += 1) {
+    const plain = stripTerminalControls(lines[row] ?? "");
+    const lineWidth = visibleWidth(plain);
+    const startCol = row === start.row ? clamp(start.col, 0, lineWidth) : 0;
+    const endCol = row === end.row ? clamp(end.col, startCol, lineWidth) : lineWidth;
+    selected.push(slicePlainTextColumns(plain, startCol, endCol));
+  }
+
+  return selected.join("\n").replace(/[ \t]+$/gm, "").trimEnd();
+}
+
 function buildSplitLayout(
   tui: TuiWithInternals,
   width: number,
@@ -826,6 +956,7 @@ function forceOriginalRenderer(
 ): void {
   const leavingStickyRenderer = viewportMetadata.has(thisArg);
   viewportMetadata.delete(thisArg);
+  selectionState.delete(thisArg);
   logDiagnostic("fallback", {
     reason,
     width: tui.terminal?.columns,
@@ -952,8 +1083,10 @@ function patchedDoRender(this: TUI): void {
     ? { ...layout, screenLines: compositeOverlaysOntoScreenLines(tui, layout.screenLines, width, height) }
     : layout;
 
-  const cursorPos = extractCursorPosition(compositedLayout.screenLines, height);
-  const appliedLines = tui.applyLineResets?.(compositedLayout.screenLines) ?? compositedLayout.screenLines;
+  const cursorLines = [...compositedLayout.screenLines];
+  const cursorPos = extractCursorPosition(cursorLines, height);
+  const selectedLines = applySelectionHighlight(this, cursorLines);
+  const appliedLines = tui.applyLineResets?.(selectedLines) ?? selectedLines;
   const appliedLayout: SplitLayout = {
     ...compositedLayout,
     screenLines: normalizeVisibleLines(appliedLines, width),
@@ -1075,10 +1208,80 @@ function updateViewportTop(
   historyViewportState.set(tui, { viewportTop, followBottom });
 
   if (changed) {
+    selectionState.delete(tui);
     runtimeTui.requestRender();
   }
 
   return { handled: true, changed, viewportTop, followBottom };
+}
+
+export function startStickySplitFooterSelection(runtimeTui: TUI | undefined, row: number, col: number): boolean {
+  if (!runtimeTui || !viewportMetadata.has(runtimeTui as unknown as object)) {
+    return false;
+  }
+
+  const tui = getTuiInternals(runtimeTui);
+  const point = normalizeSelectionPoint(tui, row, col);
+  selectionState.set(runtimeTui as unknown as object, { anchor: point, focus: point, dragging: true });
+  runtimeTui.requestRender();
+  return true;
+}
+
+export function updateStickySplitFooterSelection(runtimeTui: TUI | undefined, row: number, col: number): boolean {
+  if (!runtimeTui) {
+    return false;
+  }
+
+  const tuiKey = runtimeTui as unknown as object;
+  const state = selectionState.get(tuiKey);
+  if (!state || !state.dragging) {
+    return false;
+  }
+
+  const tui = getTuiInternals(runtimeTui);
+  selectionState.set(tuiKey, { ...state, focus: normalizeSelectionPoint(tui, row, col) });
+  runtimeTui.requestRender();
+  return true;
+}
+
+export function finishStickySplitFooterSelection(
+  runtimeTui: TUI | undefined,
+  row: number,
+  col: number,
+): { handled: boolean; text?: string } {
+  if (!runtimeTui) {
+    return { handled: false };
+  }
+
+  const tuiKey = runtimeTui as unknown as object;
+  const state = selectionState.get(tuiKey);
+  if (!state || !state.dragging) {
+    return { handled: false };
+  }
+
+  const tui = getTuiInternals(runtimeTui);
+  const nextState = { ...state, focus: normalizeSelectionPoint(tui, row, col), dragging: false };
+  const text = getSelectedText(tui.previousLines, nextState);
+  if (text.length === 0) {
+    selectionState.delete(tuiKey);
+  } else {
+    selectionState.set(tuiKey, nextState);
+  }
+  runtimeTui.requestRender();
+  return { handled: true, text: text.length > 0 ? text : undefined };
+}
+
+export function clearStickySplitFooterSelection(runtimeTui: TUI | undefined): boolean {
+  if (!runtimeTui) {
+    return false;
+  }
+
+  const tuiKey = runtimeTui as unknown as object;
+  const hadSelection = selectionState.delete(tuiKey);
+  if (hadSelection) {
+    runtimeTui.requestRender();
+  }
+  return hadSelection;
 }
 
 export function scrollStickySplitFooterViewport(
@@ -1114,6 +1317,7 @@ export function resetStickySplitFooterViewport(runtimeTui?: TUI): void {
   historyViewportState.delete(runtimeTui as unknown as object);
   viewportMetadata.delete(runtimeTui as unknown as object);
   overlayPresence.delete(runtimeTui as unknown as object);
+  selectionState.delete(runtimeTui as unknown as object);
 }
 
 export function getStickySplitFooterPatchStatus(): StickySplitFooterPatchStatus {

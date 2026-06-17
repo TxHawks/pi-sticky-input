@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 
 type MouseScrollCommandModule = typeof import("./commands/mouse-scroll-command.js");
@@ -251,17 +251,38 @@ function handleStickyTerminalInput(
   }
 
   if (config.mouseScroll && terminalSession.isMouseInput(data)) {
-    const direction = terminalSession.parseMouseWheelInput(data);
-    if (direction) {
-      const deltaRows = direction === "up" ? -config.mouseWheelScrollRows : config.mouseWheelScrollRows;
+    const mouseAction = terminalSession.getStickyMouseInputAction(data, { selectionCopy: config.mouseSelectionCopy });
+
+    if (mouseAction?.type === "wheel") {
+      const deltaRows = mouseAction.direction === "up" ? -config.mouseWheelScrollRows : config.mouseWheelScrollRows;
       const result = splitFooterRenderer.scrollStickySplitFooterViewport(tui, deltaRows);
       runtime.logger.log("terminal_mouse_scroll", {
-        direction,
+        direction: mouseAction.direction,
         deltaRows,
         handled: result.handled,
         changed: result.changed,
         viewportTop: result.viewportTop,
         followBottom: result.followBottom,
+      });
+    } else if (config.mouseSelectionCopy && mouseAction?.type === "leftPress") {
+      const handled = splitFooterRenderer.startStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
+      runtime.logger.log("terminal_mouse_selection_start", { handled, row: mouseAction.row, col: mouseAction.col });
+    } else if (config.mouseSelectionCopy && mouseAction?.type === "leftDrag") {
+      const handled = splitFooterRenderer.updateStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
+      runtime.logger.log("terminal_mouse_selection_update", { handled, row: mouseAction.row, col: mouseAction.col });
+    } else if (config.mouseSelectionCopy && mouseAction?.type === "release") {
+      const selection = splitFooterRenderer.finishStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
+      if (selection.text) {
+        void copyToClipboard(selection.text).then(
+          () => runtime.logger.log("terminal_mouse_selection_copied", { characters: selection.text?.length ?? 0 }),
+          (error: unknown) => runtime.logger.log("terminal_mouse_selection_copy_failed", { error }),
+        );
+      }
+      runtime.logger.log("terminal_mouse_selection_finish", {
+        handled: selection.handled,
+        copied: Boolean(selection.text),
+        row: mouseAction.row,
+        col: mouseAction.col,
       });
     }
 
@@ -309,6 +330,7 @@ async function applyRuntimeMouseScrollMode(
     alternateScreen: config.alternateScreen,
     alternateScroll: config.alternateScroll,
     mouseScroll: config.mouseScroll,
+    mouseSelectionCopy: config.mouseSelectionCopy,
     diagnostic: (event, fields) => runtime.logger.log(event, fields),
   });
 }
@@ -351,6 +373,7 @@ async function installSplitFooterRendererHook(ctx: ExtensionContext, runtime: Ru
           alternateScreen: config.alternateScreen,
           alternateScroll: config.alternateScroll,
           mouseScroll: config.mouseScroll,
+          mouseSelectionCopy: config.mouseSelectionCopy,
           diagnostic: (event, fields) => runtime.logger.log(event, fields),
         });
       }
@@ -362,6 +385,7 @@ async function installSplitFooterRendererHook(ctx: ExtensionContext, runtime: Ru
         alternateScreen: config.alternateScreen,
         alternateScroll: config.alternateScroll,
         mouseScroll: config.mouseScroll,
+        mouseSelectionCopy: config.mouseSelectionCopy,
         mouseWheelScrollRows: config.mouseWheelScrollRows,
         keyboardScroll: config.keyboardScroll,
         keyboardScrollRows: config.keyboardScrollRows,
@@ -503,6 +527,7 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
       alternateScreen: config.alternateScreen,
       alternateScroll: config.alternateScroll,
       mouseScroll: config.mouseScroll,
+      mouseSelectionCopy: config.mouseSelectionCopy,
       mouseWheelScrollRows: config.mouseWheelScrollRows,
       keyboardScroll: config.keyboardScroll,
       keyboardScrollRows: config.keyboardScrollRows,

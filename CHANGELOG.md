@@ -4,6 +4,12 @@ All notable changes to this extension will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Added `mouseSelectionCopy` (default `true`): when `mouseScroll` is enabled, mouse drag selection is emulated inside the sticky viewport and copied to the clipboard on release.
+
+### Changed
+- Set the default interaction model to full-screen mouse scrolling: `alternateScreen: true`, `mouseScroll: true`, and `mouseSelectionCopy: true`.
+
 ## [0.2.0] - 2026-06-15
 
 ### Added

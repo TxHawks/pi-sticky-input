@@ -8,9 +8,9 @@
 
 - Keeps Pi's status, below-editor widgets, editor, and footer together in a sticky pane.
 - Bounds rendered history above the sticky pane so long sessions do not push input off screen.
-- Uses an alternate screen by default to avoid terminal scrollback fighting the sticky input layout.
+- Uses an alternate screen by default for a full-screen sticky layout.
 - Supports keyboard history scrolling with `PageUp`, `PageDown`, `Ctrl+PageUp`, `Ctrl+PageDown`, `Ctrl+Home`, and `Ctrl+End`.
-- Supports optional terminal mouse-wheel scrolling through alternate-scroll mode or SGR mouse capture.
+- Supports terminal mouse-wheel scrolling through SGR mouse capture by default, with emulated drag-to-copy selection while mouse capture is enabled.
 - Keeps history scrollable while an interactive overlay (such as a question dialog) is open, compositing the overlay on top of the sticky pane (`overlayScroll`).
 - Falls back to Pi's original renderer for structurally unknown layouts (and for overlays when `overlayScroll` is off or the host pi-tui lacks overlay compositing).
 - Keeps debug logging disabled by default and writes only to the extension-local `debug/` directory when enabled.
@@ -43,7 +43,9 @@ The `/sticky-input` command controls optional mouse-wheel capture at runtime:
 /sticky-input help
 ```
 
-Keyboard history scrolling is enabled by default. Mouse-wheel capture is disabled by default because full mouse tracking can block native terminal text selection and link clicks.
+Keyboard history scrolling, mouse-wheel capture, and alternate-screen mode are enabled by default.
+
+Because mouse capture is enabled by default, native terminal selection/link clicks are captured by the app. With `mouseSelectionCopy: true` (default), pi-sticky-input emulates drag selection inside the rendered viewport and copies selected text to the clipboard on mouse release. Run `/sticky-input off` to restore native terminal mouse behavior for the current session.
 
 ## Configuration
 
@@ -90,9 +92,10 @@ The published package intentionally excludes local runtime state: `config.json` 
 | `debug`                    | `boolean` | `false` | Enables file-only diagnostics under `debug/debug.log`                                                                                                                      |
 | `enabled`                  | `boolean` | `true`  | Enables the extension                                                                                                                                                      |
 | `splitFooterRenderer`      | `boolean` | `true`  | Enables the sticky split-footer renderer patch                                                                                                                             |
-| `alternateScreen`          | `boolean` | `true`  | Uses an alternate terminal screen while the session is active                                                                                                              |
+| `alternateScreen`          | `boolean` | `true`  | Uses an alternate terminal screen while the session is active for a full-screen app-style layout                                                                            |
 | `alternateScroll`          | `boolean` | `false` | Lets compatible terminals translate wheel input into alternate-screen cursor sequences                                                                                     |
-| `mouseScroll`              | `boolean` | `false` | Enables SGR mouse-wheel capture for terminals without alternate-scroll support                                                                                             |
+| `mouseScroll`              | `boolean` | `true`  | Enables SGR mouse-wheel capture for terminals without alternate-scroll support                                                                                             |
+| `mouseSelectionCopy`       | `boolean` | `true`  | When `mouseScroll` is enabled, emulates drag selection and copies selected text to the clipboard on release                                                                |
 | `mouseWheelScrollRows`     | `number`  | `3`     | Rows scrolled per wheel event                                                                                                                                              |
 | `keyboardScroll`           | `boolean` | `true`  | Enables page-key and home/end history scrolling                                                                                                                            |
 | `keyboardScrollRows`       | `number`  | `10`    | Rows scrolled per keyboard page event                                                                                                                                      |
@@ -109,7 +112,8 @@ The published package intentionally excludes local runtime state: `config.json` 
   "splitFooterRenderer": true,
   "alternateScreen": true,
   "alternateScroll": false,
-  "mouseScroll": false,
+  "mouseScroll": true,
+  "mouseSelectionCopy": true,
   "mouseWheelScrollRows": 3,
   "keyboardScroll": true,
   "keyboardScrollRows": 10,

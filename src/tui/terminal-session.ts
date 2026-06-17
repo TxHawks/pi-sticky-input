@@ -6,16 +6,22 @@ export interface StickyTerminalSessionOptions {
   alternateScreen: boolean;
   alternateScroll: boolean;
   mouseScroll: boolean;
+  mouseSelectionCopy: boolean;
   diagnostic?: StickyTerminalDiagnostic;
 }
 
 export type MouseWheelDirection = "up" | "down";
+export type StickyMouseInputAction =
+  | { type: "wheel"; direction: MouseWheelDirection }
+  | { type: "leftPress" | "leftDrag" | "release"; row: number; col: number }
+  | { type: "mouse" };
 
 interface ActiveTerminalModes {
   tui: TUI;
   alternateScreen: boolean;
   alternateScroll: boolean;
   mouseScroll: boolean;
+  mouseSelectionCopy: boolean;
 }
 
 interface TuiStopPatch {
@@ -31,12 +37,14 @@ const EXIT_ALTERNATE_SCREEN_SEQUENCE = "\x1b[?1049l";
 const ENABLE_ALTERNATE_SCROLL_SEQUENCE = "\x1b[?1007h";
 const DISABLE_ALTERNATE_SCROLL_SEQUENCE = "\x1b[?1007l";
 const ENABLE_SGR_MOUSE_SEQUENCE = "\x1b[?1000h\x1b[?1006h";
-const DISABLE_SGR_MOUSE_SEQUENCE = "\x1b[?1006l\x1b[?1000l";
+const ENABLE_SGR_MOUSE_DRAG_SEQUENCE = "\x1b[?1002h\x1b[?1006h";
+const DISABLE_SGR_MOUSE_SEQUENCE = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const SGR_MOUSE_PATTERN = /\x1b\[<(\d+);(\d+);(\d+)([mM])/g;
 const X10_MOUSE_PATTERN = /\x1b\[M([\s\S])([\s\S])([\s\S])/g;
 const PAGE_UP_ANY_MODIFIER_PATTERN = /^\x1b\[5(?:;[2-8])?~$/;
 const PAGE_DOWN_ANY_MODIFIER_PATTERN = /^\x1b\[6(?:;[2-8])?~$/;
 const MOUSE_MODIFIER_MASK = 4 | 8 | 16;
+const MOUSE_MOTION_MASK = 32;
 const WHEEL_UP_BUTTON = 64;
 const WHEEL_DOWN_BUTTON = 65;
 
@@ -52,6 +60,7 @@ function getEffectiveTerminalModes(options: StickyTerminalSessionOptions): Omit<
     alternateScreen: options.alternateScreen,
     alternateScroll: options.alternateScreen && options.alternateScroll && !options.mouseScroll,
     mouseScroll: options.mouseScroll,
+    mouseSelectionCopy: options.mouseScroll && options.mouseSelectionCopy !== false,
   };
 }
 
@@ -60,7 +69,12 @@ function sameActiveModes(tui: TUI, options: StickyTerminalSessionOptions): boole
   return activeTerminalModes?.tui === tui
     && activeTerminalModes.alternateScreen === effectiveModes.alternateScreen
     && activeTerminalModes.alternateScroll === effectiveModes.alternateScroll
-    && activeTerminalModes.mouseScroll === effectiveModes.mouseScroll;
+    && activeTerminalModes.mouseScroll === effectiveModes.mouseScroll
+    && activeTerminalModes.mouseSelectionCopy === effectiveModes.mouseSelectionCopy;
+}
+
+function getEnableMouseSequence(mouseSelectionCopy: boolean): string {
+  return mouseSelectionCopy ? ENABLE_SGR_MOUSE_DRAG_SEQUENCE : ENABLE_SGR_MOUSE_SEQUENCE;
 }
 
 function buildTerminalModeTransitionSequence(
@@ -68,8 +82,11 @@ function buildTerminalModeTransitionSequence(
   nextModes: Omit<ActiveTerminalModes, "tui">,
 ): string {
   let sequence = "";
+  const mouseModeChanged = currentModes.mouseScroll
+    && nextModes.mouseScroll
+    && currentModes.mouseSelectionCopy !== nextModes.mouseSelectionCopy;
 
-  if (currentModes.mouseScroll && !nextModes.mouseScroll) {
+  if (currentModes.mouseScroll && (!nextModes.mouseScroll || mouseModeChanged)) {
     sequence += DISABLE_SGR_MOUSE_SEQUENCE;
   }
   if (currentModes.alternateScroll && !nextModes.alternateScroll) {
@@ -78,8 +95,8 @@ function buildTerminalModeTransitionSequence(
   if (!currentModes.alternateScroll && nextModes.alternateScroll) {
     sequence += ENABLE_ALTERNATE_SCROLL_SEQUENCE;
   }
-  if (!currentModes.mouseScroll && nextModes.mouseScroll) {
-    sequence += ENABLE_SGR_MOUSE_SEQUENCE;
+  if (nextModes.mouseScroll && (!currentModes.mouseScroll || mouseModeChanged)) {
+    sequence += getEnableMouseSequence(nextModes.mouseSelectionCopy);
   }
 
   return sequence;
@@ -140,6 +157,7 @@ export function activateStickyTerminalSession(tui: TUI, options: StickyTerminalS
       alternateScreen: effectiveModes.alternateScreen,
       alternateScroll: effectiveModes.alternateScroll,
       mouseScroll: effectiveModes.mouseScroll,
+      mouseSelectionCopy: effectiveModes.mouseSelectionCopy,
     });
     tui.requestRender(true);
     return;
@@ -163,7 +181,7 @@ export function activateStickyTerminalSession(tui: TUI, options: StickyTerminalS
     sequence += DISABLE_ALTERNATE_SCROLL_SEQUENCE;
   }
   if (effectiveModes.mouseScroll) {
-    sequence += ENABLE_SGR_MOUSE_SEQUENCE;
+    sequence += getEnableMouseSequence(effectiveModes.mouseSelectionCopy);
   }
 
   if (sequence.length > 0) {
@@ -179,6 +197,7 @@ export function activateStickyTerminalSession(tui: TUI, options: StickyTerminalS
     alternateScreen: effectiveModes.alternateScreen,
     alternateScroll: effectiveModes.alternateScroll,
     mouseScroll: effectiveModes.mouseScroll,
+    mouseSelectionCopy: effectiveModes.mouseSelectionCopy,
   });
   tui.requestRender(true);
 }
@@ -188,7 +207,7 @@ export function deactivateStickyTerminalSession(diagnostic?: StickyTerminalDiagn
     return;
   }
 
-  const { tui, alternateScreen, alternateScroll, mouseScroll } = activeTerminalModes;
+  const { tui, alternateScreen, alternateScroll, mouseScroll, mouseSelectionCopy } = activeTerminalModes;
   activeTerminalModes = undefined;
   restoreStopPatch(tui);
 
@@ -213,7 +232,7 @@ export function deactivateStickyTerminalSession(diagnostic?: StickyTerminalDiagn
     write(sequence);
   }
 
-  diagnostic?.("terminal_modes_deactivated", { alternateScreen, alternateScroll, mouseScroll });
+  diagnostic?.("terminal_modes_deactivated", { alternateScreen, alternateScroll, mouseScroll, mouseSelectionCopy });
 }
 
 export function getActiveStickyTerminalTui(): TUI | undefined {
@@ -271,8 +290,19 @@ export function shouldHandleStickyTerminalInput(tui: unknown): boolean {
   return isEditorLikeFocus(tui.focusedComponent);
 }
 
+interface SgrMousePacket {
+  code: number;
+  col: number;
+  row: number;
+  final: "m" | "M";
+}
+
+function getMouseButton(rawButton: number): number {
+  return rawButton & ~(MOUSE_MODIFIER_MASK | MOUSE_MOTION_MASK);
+}
+
 function getMouseWheelDirection(rawButton: number): MouseWheelDirection | undefined {
-  const button = rawButton & ~MOUSE_MODIFIER_MASK;
+  const button = getMouseButton(rawButton);
   if (button === WHEEL_UP_BUTTON) {
     return "up";
   }
@@ -282,6 +312,23 @@ function getMouseWheelDirection(rawButton: number): MouseWheelDirection | undefi
   }
 
   return undefined;
+}
+
+function parseSgrMousePackets(data: string): SgrMousePacket[] {
+  SGR_MOUSE_PATTERN.lastIndex = 0;
+  const packets: SgrMousePacket[] = [];
+
+  for (const match of data.matchAll(SGR_MOUSE_PATTERN)) {
+    const code = Number.parseInt(match[1] ?? "", 10);
+    const col = Number.parseInt(match[2] ?? "", 10);
+    const row = Number.parseInt(match[3] ?? "", 10);
+    const final = match[4];
+    if (Number.isFinite(code) && Number.isFinite(col) && Number.isFinite(row) && (final === "m" || final === "M")) {
+      packets.push({ code, col, row, final });
+    }
+  }
+
+  return packets;
 }
 
 export function parseAlternateScrollInput(
@@ -339,6 +386,44 @@ export function parseMouseWheelInput(data: string): MouseWheelDirection | undefi
   }
 
   return direction;
+}
+
+export function getStickyMouseInputAction(
+  data: string,
+  options: { selectionCopy?: boolean } = {},
+): StickyMouseInputAction | undefined {
+  const packets = parseSgrMousePackets(data);
+  for (const packet of packets) {
+    const direction = getMouseWheelDirection(packet.code);
+    if (direction) {
+      return { type: "wheel", direction };
+    }
+  }
+
+  if (options.selectionCopy === true) {
+    const packet = packets.at(-1);
+    if (packet) {
+      const point = { row: packet.row - 1, col: packet.col - 1 };
+      const button = getMouseButton(packet.code);
+      const motion = (packet.code & MOUSE_MOTION_MASK) !== 0;
+      if (packet.final === "M" && button === 0 && !motion) {
+        return { type: "leftPress", ...point };
+      }
+      if (packet.final === "M" && button === 0 && motion) {
+        return { type: "leftDrag", ...point };
+      }
+      if (packet.final === "m") {
+        return { type: "release", ...point };
+      }
+    }
+  }
+
+  const direction = parseMouseWheelInput(data);
+  if (direction) {
+    return { type: "wheel", direction };
+  }
+
+  return isMouseInput(data) ? { type: "mouse" } : undefined;
 }
 
 export function isMouseInput(data: string): boolean {

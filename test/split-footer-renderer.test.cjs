@@ -401,6 +401,22 @@ test("native inline image rows with leading cursor-up prefixes keep their multi-
   );
 });
 
+test("mouse selection highlights visible rows and returns selected text", () => {
+  const tui = createRuntimeTui();
+  const doRender = patchRuntimeTui(tui);
+
+  doRender.call(tui);
+  assert.equal(renderer.startStickySplitFooterSelection(tui, 0, 0), true);
+  assert.equal(renderer.updateStickySplitFooterSelection(tui, 1, 7), true);
+
+  doRender.call(tui);
+  assert.equal(tui.previousLines[0].includes("\x1b[7mhistory-15\x1b[27m"), true);
+  assert.equal(tui.previousLines[1].includes("\x1b[7mhistory\x1b[27m"), true);
+
+  const selection = renderer.finishStickySplitFooterSelection(tui, 1, 7);
+  assert.deepEqual(selection, { handled: true, text: "history-15\nhistory" });
+});
+
 test("history viewport remains pinned when new history arrives while scrolled up", () => {
   const tui = createRuntimeTui();
   const doRender = patchRuntimeTui(tui);

@@ -72,7 +72,7 @@ export function applyStickyMouseScrollMode(config: StickyMouseScrollConfig, enab
 
 export function getStickyMouseScrollStatusMessage(enabled: boolean): string {
   return enabled
-    ? "pi-sticky-input mouse-wheel chat scrolling is ON. Native terminal selection/link clicks are captured while this is on. Run /sticky-input off to restore native terminal mouse behavior."
+    ? "pi-sticky-input mouse-wheel chat scrolling is ON. Native terminal selection/link clicks are captured while this is on; drag selection is copied to the clipboard when mouseSelectionCopy is enabled. Run /sticky-input off to restore native terminal mouse behavior."
     : "pi-sticky-input mouse-wheel chat scrolling is OFF. Native terminal selection/link clicks are preserved. Run /sticky-input on to enable mouse-wheel chat scrolling.";
 }
 
