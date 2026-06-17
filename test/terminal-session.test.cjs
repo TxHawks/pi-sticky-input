@@ -159,11 +159,19 @@ test("arrow key sequences are left for the focused UI instead of sticky history 
   );
 });
 
-test("visible overlays can bypass sticky terminal input handling", () => {
+test("visible input-capturing overlays can bypass sticky terminal input handling", () => {
   assert.equal(terminalSession.hasVisibleOverlay(undefined), false);
   assert.equal(terminalSession.hasVisibleOverlay({ hasOverlay: () => true }), true);
-  assert.equal(terminalSession.hasVisibleOverlay({ hasOverlay: () => false, overlayStack: [{}] }), false);
   assert.equal(terminalSession.hasVisibleOverlay({ overlayStack: [{}] }), true);
+  assert.equal(terminalSession.hasVisibleOverlay({ overlayStack: [{ options: { nonCapturing: true } }] }), false);
+  assert.equal(terminalSession.hasVisibleOverlay({ overlayStack: [{ hidden: true }] }), false);
+  assert.equal(
+    terminalSession.hasVisibleOverlay({
+      terminal: { columns: 80, rows: 24 },
+      overlayStack: [{ options: { visible: () => false } }],
+    }),
+    false,
+  );
   assert.equal(terminalSession.hasVisibleOverlay({ overlayStack: [] }), false);
 });
 

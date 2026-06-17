@@ -1,5 +1,5 @@
-import { copyToClipboard, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import { copyToClipboard, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
 
 type MouseScrollCommandModule = typeof import("./commands/mouse-scroll-command.js");
 type ConfigModule = typeof import("./config/config.js");
@@ -12,6 +12,9 @@ type StickySplitFooterPatchStatus = import("./tui/split-footer-renderer.js").Sti
 
 const EXTENSION_ID = "pi-sticky-input";
 const RUNTIME_PATCH_WIDGET_KEY = `${EXTENSION_ID}:runtime-renderer-hook`;
+const MOUSE_COPY_TOAST_TEXT = "Text copied";
+const MOUSE_COPY_TOAST_MARGIN = 2;
+const MOUSE_COPY_TOAST_DURATION_MS = 1200;
 const DEFAULT_PATCH_STATUS: StickySplitFooterPatchStatus = {
   installed: false,
   active: false,
@@ -31,6 +34,20 @@ class StickyRendererHookComponent implements Component {
 
   invalidate(): void {
     // No cached state.
+  }
+}
+
+class MouseCopyToastComponent implements Component {
+  constructor(private readonly theme: Theme) {}
+
+  render(width: number): string[] {
+    const content = ` ${MOUSE_COPY_TOAST_TEXT} `;
+    const padded = content.padEnd(Math.max(content.length, width), " ").slice(0, Math.max(content.length, width));
+    return [this.theme.bg("toolSuccessBg", this.theme.fg("text", padded))];
+  }
+
+  invalidate(): void {
+    // Theme is captured from the overlay factory; a fresh component is created for each toast.
   }
 }
 
@@ -214,6 +231,7 @@ function handleStickyTerminalInput(
   splitFooterRenderer: SplitFooterRendererModule,
   data: string,
   getEditorText?: () => string,
+  onMouseSelectionCopied?: (tui: TUI) => void,
 ): { consume?: boolean; data?: string } | undefined {
   const { config } = runtime.configResult;
   const tui = terminalSession.getActiveStickyTerminalTui();
@@ -274,7 +292,12 @@ function handleStickyTerminalInput(
       const selection = splitFooterRenderer.finishStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
       if (selection.text) {
         void copyToClipboard(selection.text).then(
-          () => runtime.logger.log("terminal_mouse_selection_copied", { characters: selection.text?.length ?? 0 }),
+          () => {
+            runtime.logger.log("terminal_mouse_selection_copied", { characters: selection.text?.length ?? 0 });
+            if (tui) {
+              onMouseSelectionCopied?.(tui);
+            }
+          },
           (error: unknown) => runtime.logger.log("terminal_mouse_selection_copy_failed", { error }),
         );
       }
@@ -403,6 +426,40 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
   let unsubscribeTerminalInput: (() => void) | undefined;
   let terminalInputListenerGeneration = 0;
   let projectCwd: string | undefined;
+  let mouseCopyToastHandle: OverlayHandle | undefined;
+  let mouseCopyToastTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function clearMouseCopyToast(): void {
+    if (mouseCopyToastTimer) {
+      clearTimeout(mouseCopyToastTimer);
+      mouseCopyToastTimer = undefined;
+    }
+    mouseCopyToastHandle?.hide();
+    mouseCopyToastHandle = undefined;
+  }
+
+  function showMouseCopyToast(ctx: ExtensionContext, currentRuntime: RuntimeState, tui: TUI): void {
+    if (!ctx.hasUI || ctx.mode !== "tui") {
+      return;
+    }
+
+    try {
+      clearMouseCopyToast();
+      mouseCopyToastHandle = tui.showOverlay(new MouseCopyToastComponent(ctx.ui.theme), {
+        anchor: "top-right",
+        margin: MOUSE_COPY_TOAST_MARGIN,
+        width: MOUSE_COPY_TOAST_TEXT.length + 2,
+        nonCapturing: true,
+      });
+      mouseCopyToastTimer = setTimeout(clearMouseCopyToast, MOUSE_COPY_TOAST_DURATION_MS);
+      if (typeof mouseCopyToastTimer === "object" && "unref" in mouseCopyToastTimer) {
+        mouseCopyToastTimer.unref();
+      }
+      tui.requestRender();
+    } catch (error) {
+      currentRuntime.logger.log("mouse_copy_toast_failed", { error });
+    }
+  }
 
   async function refreshRuntimeState(): Promise<RuntimeState> {
     const nextRuntime = createRuntimeState(projectCwd);
@@ -466,6 +523,7 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
     terminalInputListenerGeneration += 1;
     unsubscribeTerminalInput?.();
     unsubscribeTerminalInput = undefined;
+    clearMouseCopyToast();
   }
 
   async function installTerminalInputListener(ctx: ExtensionContext, currentRuntime: RuntimeState): Promise<void> {
@@ -495,6 +553,7 @@ export default function stickyInputExtension(pi: ExtensionAPI): void {
       splitFooterRenderer,
       data,
       () => ctx.ui.getEditorText(),
+      (activeTui) => showMouseCopyToast(ctx, currentRuntime, activeTui),
     ));
   }
 

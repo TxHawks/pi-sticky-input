@@ -45,7 +45,7 @@ The `/sticky-input` command controls optional mouse-wheel capture at runtime:
 
 Keyboard history scrolling, mouse-wheel capture, and alternate-screen mode are enabled by default.
 
-Because mouse capture is enabled by default, native terminal selection/link clicks are captured by the app. With `mouseSelectionCopy: true` (default), pi-sticky-input emulates drag selection inside the rendered viewport and copies selected text to the clipboard on mouse release. Run `/sticky-input off` to restore native terminal mouse behavior for the current session.
+Because mouse capture is enabled by default, native terminal selection/link clicks are captured by the app. With `mouseSelectionCopy: true` (default), pi-sticky-input emulates drag selection inside the rendered viewport, copies selected text to the clipboard on mouse release, and briefly shows a themed top-right `Text copied` overlay. Run `/sticky-input off` to restore native terminal mouse behavior for the current session.
 
 ## Configuration
 

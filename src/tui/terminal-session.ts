@@ -243,9 +243,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isInputCapturingOverlayVisible(entry: unknown, tui: Record<string, unknown>): boolean {
+  if (!isRecord(entry) || entry.hidden === true) {
+    return false;
+  }
+
+  const options = isRecord(entry.options) ? entry.options : undefined;
+  if (options?.nonCapturing === true) {
+    return false;
+  }
+
+  const visible = options?.visible;
+  if (typeof visible === "function") {
+    const terminal = isRecord(tui.terminal) ? tui.terminal : {};
+    const width = typeof terminal.columns === "number" ? terminal.columns : 80;
+    const height = typeof terminal.rows === "number" ? terminal.rows : 24;
+    return visible(width, height) === true;
+  }
+
+  return true;
+}
+
 export function hasVisibleOverlay(tui: unknown): boolean {
   if (!isRecord(tui)) {
     return false;
+  }
+
+  if (Array.isArray(tui.overlayStack)) {
+    return tui.overlayStack.some((entry) => isInputCapturingOverlayVisible(entry, tui));
   }
 
   const hasOverlay = tui.hasOverlay;
@@ -253,7 +278,7 @@ export function hasVisibleOverlay(tui: unknown): boolean {
     return hasOverlay.call(tui) === true;
   }
 
-  return Array.isArray(tui.overlayStack) && tui.overlayStack.length > 0;
+  return false;
 }
 
 function isEditorLikeFocus(component: unknown): boolean {

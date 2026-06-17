@@ -4,6 +4,9 @@ All notable changes to this extension will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Show a themed top-right copy confirmation overlay after mouse-selection text is copied.
+
 ## [0.3.0] - 2026-06-17
 
 ### Added
