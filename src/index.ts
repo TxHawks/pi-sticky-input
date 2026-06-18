@@ -43,7 +43,7 @@ class MouseCopyToastComponent implements Component {
   render(width: number): string[] {
     const content = ` ${MOUSE_COPY_TOAST_TEXT} `;
     const padded = content.padEnd(Math.max(content.length, width), " ").slice(0, Math.max(content.length, width));
-    return [this.theme.bg("toolSuccessBg", this.theme.fg("text", padded))];
+    return [this.theme.inverse(this.theme.fg("text", padded))];
   }
 
   invalidate(): void {
@@ -189,25 +189,60 @@ function handleStickyOverlayScrollInput(
   splitFooterRenderer: SplitFooterRendererModule,
   tui: ReturnType<TerminalSessionModule["getActiveStickyTerminalTui"]>,
   data: string,
+  onMouseSelectionCopied?: (tui: TUI) => void,
 ): { consume?: boolean; data?: string } | undefined {
   const { config } = runtime.configResult;
-  const action = terminalSession.getOverlayScrollAction(data, config);
-  if (!action) {
-    return undefined;
-  }
 
-  if (action.type === "mouse") {
-    if (action.deltaRows !== undefined) {
-      const result = splitFooterRenderer.scrollStickySplitFooterViewport(tui, action.deltaRows);
+  if (config.mouseScroll && terminalSession.isMouseInput(data)) {
+    const mouseAction = terminalSession.getStickyMouseInputAction(data, { selectionCopy: config.mouseSelectionCopy });
+
+    if (mouseAction?.type === "wheel") {
+      const deltaRows = mouseAction.direction === "up" ? -config.mouseWheelScrollRows : config.mouseWheelScrollRows;
+      const result = splitFooterRenderer.scrollStickySplitFooterViewport(tui, deltaRows);
       runtime.logger.log("overlay_mouse_scroll", {
-        deltaRows: action.deltaRows,
+        direction: mouseAction.direction,
+        deltaRows,
         handled: result.handled,
         changed: result.changed,
         viewportTop: result.viewportTop,
         followBottom: result.followBottom,
       });
+    } else if (config.mouseSelectionCopy && mouseAction?.type === "leftPress") {
+      const handled = splitFooterRenderer.startStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
+      runtime.logger.log("overlay_mouse_selection_start", { handled, row: mouseAction.row, col: mouseAction.col });
+    } else if (config.mouseSelectionCopy && mouseAction?.type === "leftDrag") {
+      const handled = splitFooterRenderer.updateStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
+      runtime.logger.log("overlay_mouse_selection_update", { handled, row: mouseAction.row, col: mouseAction.col });
+    } else if (config.mouseSelectionCopy && mouseAction?.type === "release") {
+      const selection = splitFooterRenderer.finishStickySplitFooterSelection(tui, mouseAction.row, mouseAction.col);
+      if (selection.text) {
+        void copyToClipboard(selection.text).then(
+          () => {
+            runtime.logger.log("overlay_mouse_selection_copied", { characters: selection.text?.length ?? 0 });
+            if (tui) {
+              onMouseSelectionCopied?.(tui);
+            }
+          },
+          (error: unknown) => runtime.logger.log("overlay_mouse_selection_copy_failed", { error }),
+        );
+      }
+      runtime.logger.log("overlay_mouse_selection_finish", {
+        handled: selection.handled,
+        copied: Boolean(selection.text),
+        row: mouseAction.row,
+        col: mouseAction.col,
+      });
     }
+
     // Always claim mouse sequences so raw SGR/X10 bytes never reach the focused modal.
+    return { consume: true };
+  }
+
+  const action = terminalSession.getOverlayScrollAction(data, { ...config, mouseScroll: false });
+  if (!action) {
+    return undefined;
+  }
+  if (action.type !== "keyboard") {
     return { consume: true };
   }
 
@@ -236,13 +271,20 @@ function handleStickyTerminalInput(
   const { config } = runtime.configResult;
   const tui = terminalSession.getActiveStickyTerminalTui();
 
-  // While a modal/overlay is focused, only scroll the background history with inputs that cannot
-  // collide with the modal's own keys, and let everything else flow through to the modal.
+  // While a modal/overlay is focused, keep page-key/wheel scrolling and mouse selection-copy
+  // available for the composited sticky frame. Let non-mouse modal keys flow through.
   if (tui && terminalSession.hasVisibleOverlay(tui)) {
     if (!config.overlayScroll) {
       return undefined;
     }
-    return handleStickyOverlayScrollInput(runtime, terminalSession, splitFooterRenderer, tui, data);
+    return handleStickyOverlayScrollInput(
+      runtime,
+      terminalSession,
+      splitFooterRenderer,
+      tui,
+      data,
+      onMouseSelectionCopied,
+    );
   }
 
   if (!terminalSession.shouldHandleStickyTerminalInput(tui)) {

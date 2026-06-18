@@ -129,7 +129,8 @@ Invalid or missing values are normalized to bounded defaults when the extension 
 
 With `overlayScroll` enabled (the default), the history viewport stays scrollable while an interactive overlay such as a question dialog is awaiting input. Only inputs that do not collide with the dialog's own keys are intercepted:
 
-- mouse wheel (requires `mouseScroll`, or alternate-scroll, to be enabled), and
+- mouse wheel (requires `mouseScroll`, or alternate-scroll, to be enabled),
+- mouse drag selection/copy (requires `mouseScroll` and `mouseSelectionCopy`), and
 - `PageUp` / `PageDown` and `Ctrl+Home` / `Ctrl+End`.
 
 Arrow keys, `Tab`, `Enter`, `Space`, and plain `Home` / `End` continue to flow through to the dialog. If the running pi-tui build does not expose overlay compositing, the extension transparently falls back to Pi's original renderer while the overlay is visible.

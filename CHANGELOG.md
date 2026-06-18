@@ -4,6 +4,10 @@ All notable changes to this extension will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Mouse-selection copy now works while an input-capturing overlay, such as a picker, is open.
+- Copy confirmation toast now uses inverse theme styling for a light-background/dark-text appearance on dark themes.
+
 ## [0.3.1] - 2026-06-17
 
 ### Added
