@@ -691,6 +691,36 @@ function applySelectionHighlight(tui: object, lines: readonly string[]): string[
   return lines.map((line, row) => renderSelectionHighlight(line, row, state));
 }
 
+function countLeadingSelectionWhitespace(line: string): number {
+  return line.match(/^[ \t]*/)?.[0].length ?? 0;
+}
+
+function removeCommonLeadingSelectionWhitespace(lines: readonly string[]): string[] {
+  const indentCounts = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => countLeadingSelectionWhitespace(line));
+
+  if (indentCounts.length === 0) {
+    return [...lines];
+  }
+
+  const commonIndent = Math.min(...indentCounts);
+  if (commonIndent <= 0) {
+    return [...lines];
+  }
+
+  return lines.map((line) => line.slice(Math.min(commonIndent, countLeadingSelectionWhitespace(line))));
+}
+
+function normalizeSelectedText(lines: readonly string[]): string {
+  const trimmedLines = lines.map((line) => line.replace(/[ \t]+$/g, ""));
+  while (trimmedLines.length > 0 && trimmedLines[trimmedLines.length - 1] === "") {
+    trimmedLines.pop();
+  }
+
+  return removeCommonLeadingSelectionWhitespace(trimmedLines).join("\n");
+}
+
 function getSelectedText(lines: readonly string[], state: SelectionState): string {
   const { start, end } = getOrderedSelection(state);
   if (start.row === end.row && start.col === end.col) {
@@ -706,7 +736,7 @@ function getSelectedText(lines: readonly string[], state: SelectionState): strin
     selected.push(slicePlainTextColumns(plain, startCol, endCol));
   }
 
-  return selected.join("\n").replace(/[ \t]+$/gm, "").trimEnd();
+  return normalizeSelectedText(selected);
 }
 
 function buildSplitLayout(

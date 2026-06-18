@@ -4,6 +4,11 @@ All notable changes to this extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-06-18
+
+### Fixed
+- Mouse-selection copy now removes common leading whitespace from selected lines while preserving relative indentation.
+
 ## [0.3.2] - 2026-06-17
 
 ### Fixed

@@ -417,6 +417,19 @@ test("mouse selection highlights visible rows and returns selected text", () => 
   assert.deepEqual(selection, { handled: true, text: "history-15\nhistory" });
 });
 
+test("mouse selection removes common leading whitespace from copied text", () => {
+  const tui = createRuntimeTui();
+  tui.history = [" foo bar", "   baz boo", "  beep boop"];
+  tui.children = [new Child(tui.history), ...tui.sticky];
+  const doRender = patchRuntimeTui(tui);
+
+  doRender.call(tui);
+  assert.equal(renderer.startStickySplitFooterSelection(tui, 0, 0), true);
+
+  const selection = renderer.finishStickySplitFooterSelection(tui, 2, "  beep boop".length);
+  assert.deepEqual(selection, { handled: true, text: "foo bar\n  baz boo\n beep boop" });
+});
+
 test("history viewport remains pinned when new history arrives while scrolled up", () => {
   const tui = createRuntimeTui();
   const doRender = patchRuntimeTui(tui);
